@@ -19,9 +19,17 @@
 package org.apache.sedona.core.spatialOperator;
 
 import java.io.Serializable;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import org.apache.sedona.common.FunctionsGeoTools;
+import org.apache.sedona.core.rangeJudgement.PartitionAwareRangeFilter;
+import org.apache.sedona.core.rangeJudgement.PartitionAwareRangeFilterUsingIndex;
 import org.apache.sedona.core.rangeJudgement.RangeFilter;
 import org.apache.sedona.core.rangeJudgement.RangeFilterUsingIndex;
+import org.apache.sedona.core.spatialPartitioning.GenericUniquePartitioner;
+import org.apache.sedona.core.spatialPartitioning.PartitionCandidateFinder;
+import org.apache.sedona.core.spatialPartitioning.SpatialPartitioner;
 import org.apache.sedona.core.spatialRDD.SpatialRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.locationtech.jts.geom.Coordinate;
@@ -62,6 +70,11 @@ public class RangeQuery implements Serializable {
                   spatialRDD.getTargetEpgsgCode());
     }
 
+    if (spatialRDD.spatialPartitionedRDD != null
+        && spatialRDD.getPartitioner() instanceof GenericUniquePartitioner) {
+      return spatialPartitionedRangeQuery(spatialRDD, queryGeometry, spatialPredicate, useIndex);
+    }
+
     if (useIndex) {
       if (spatialRDD.indexedRawRDD == null) {
         throw new Exception(
@@ -72,6 +85,46 @@ public class RangeQuery implements Serializable {
     } else {
       return spatialRDD.getRawSpatialRDD().filter(new RangeFilter(queryGeometry, spatialPredicate));
     }
+  }
+
+  /**
+   * Range query over a spatially partitioned RDD.
+   *
+   * <p>This path is used for non-duplicating partitioners ({@link GenericUniquePartitioner}) where
+   * each geometry is physically stored in exactly one partition, including geometries that span
+   * multiple grid cells. Partitions are pruned with a recall-safe candidate set computed from the
+   * partitioner grids (see {@link PartitionCandidateFinder}). This keeps the query correct when a
+   * geometry spanning multiple grid cells is stored in a cell whose extent does not intersect the
+   * query window: the candidate set always includes every cell that could physically hold a
+   * matching geometry, and the exact spatial predicate is re-evaluated on every candidate geometry.
+   * Duplicating partitioners keep using the raw RDD paths which already return complete results.
+   */
+  private static <U extends Geometry, T extends Geometry> JavaRDD<T> spatialPartitionedRangeQuery(
+      SpatialRDD<T> spatialRDD,
+      U queryGeometry,
+      SpatialPredicate spatialPredicate,
+      boolean useIndex)
+      throws Exception {
+    final SpatialPartitioner partitioner = spatialRDD.getPartitioner();
+    final List<Integer> candidatePartitionIds =
+        new PartitionCandidateFinder(partitioner)
+            .findCandidatePartitions(queryGeometry.getEnvelopeInternal());
+    final Set<Integer> candidatePartitions = new HashSet<>(candidatePartitionIds);
+
+    if (useIndex) {
+      if (spatialRDD.indexedRDD == null) {
+        throw new Exception(
+            "[RangeQuery][SpatialRangeQuery] Index doesn't exist. Please build index on the spatial partitioned RDD (buildIndex(indexType, true)).");
+      }
+      return spatialRDD.indexedRDD.mapPartitionsWithIndex(
+          new PartitionAwareRangeFilterUsingIndex<>(
+              queryGeometry, spatialPredicate, candidatePartitions),
+          false);
+    }
+
+    return spatialRDD.spatialPartitionedRDD.mapPartitionsWithIndex(
+        new PartitionAwareRangeFilter<>(queryGeometry, spatialPredicate, candidatePartitions),
+        false);
   }
 
   /**

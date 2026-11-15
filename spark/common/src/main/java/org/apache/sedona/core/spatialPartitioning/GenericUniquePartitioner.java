@@ -32,6 +32,7 @@ public class GenericUniquePartitioner extends SpatialPartitioner {
   private SpatialPartitioner parent;
 
   public GenericUniquePartitioner(SpatialPartitioner parent) {
+    super(parent.getGridType(), parent.getGrids());
     this.parent = parent;
   }
 

@@ -195,8 +195,8 @@ public class SpatialRDD<T extends Geometry> implements Serializable {
    * @throws Exception
    */
   public void spatialPartitioningWithoutDuplicates(SpatialPartitioner partitioner) {
-    partitioner = new GenericUniquePartitioner(partitioner);
-    this.spatialPartitionedRDD = partition(partitioner);
+    this.partitioner = new GenericUniquePartitioner(partitioner);
+    this.spatialPartitionedRDD = partition(this.partitioner);
   }
 
   /**
